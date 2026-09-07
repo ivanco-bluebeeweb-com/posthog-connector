@@ -17,9 +17,15 @@ async def list_events(params: ListEventParams, ctx) -> ActionResult:
         items = []
         for r in raw_items:
             rid = str(r.get("id") or r.get("key") or r.get("uuid") or "unknown")
-            rname = r.get("name") or r.get("title") or r.get("label") or rid
-            items.append({"id": rid, "name": rname, "status": r.get("status"), "created_at": r.get("createdAt") or r.get("created_at"), "raw": r})
-        return ActionResult.ok({"events": items, "total": len(items)}, summary=f"Found {len(items)} events.")
+            rname = r.get("event") or r.get("name") or r.get("title") or rid
+            items.append({
+                "id": rid,
+                "name": rname,
+                "status": r.get("status") or "captured",
+                "created_at": r.get("timestamp") or r.get("createdAt") or r.get("created_at"),
+                "raw": r
+            })
+        return ActionResult.success({"events": items, "total": len(items)}, summary=f"Found {len(items)} events.")
     except Exception as e:
         return ActionResult.error(f"Error listing events: {e}")
 
@@ -28,22 +34,34 @@ async def get_event(params: GetEventParams, ctx) -> ActionResult:
     client = await resolve_client(ctx, params.connection_id)
     try:
         r = await client.get_event(params.event_id)
+        if "error" in r and "id" not in r:
+            return ActionResult.error(f"Error fetching event: {r.get('error')}")
         rid = str(r.get("id") or params.event_id)
-        rname = r.get("name") or r.get("title") or rid
-        return ActionResult.ok({"id": rid, "name": rname, "status": r.get("status"), "created_at": r.get("createdAt") or r.get("created_at"), "raw": r}, summary=f"Retrieved Event {rid}.")
+        rname = r.get("event") or r.get("name") or r.get("title") or rid
+        return ActionResult.success({
+            "id": rid,
+            "name": rname,
+            "status": r.get("status") or "captured",
+            "created_at": r.get("timestamp") or r.get("createdAt") or r.get("created_at"),
+            "raw": r
+        }, summary=f"Event {rid} details retrieved.")
     except Exception as e:
-        return ActionResult.error(f"Error retrieving Event: {e}")
+        return ActionResult.error(f"Error getting event: {e}")
 
-@chat.function("audit_event_health", "Audit health of PostHog events and connectivity.", action_type="read", chain_callable=True, event="posthog-connector.audit_event_health", effects=["read:audit"], data_model=AuditHealthReport)
+@chat.function("audit_event_health", "Audit health of PostHog events and connectivity.", action_type="read", chain_callable=True, event="posthog-connector.audit_event_health", effects=["read:health"], data_model=AuditHealthReport)
 async def audit_event_health(params: ConnectionIdParams, ctx) -> ActionResult:
     client = await resolve_client(ctx, params.connection_id)
     try:
-        items = await client.list_events(limit=50)
-        return ActionResult.ok({
-            "healthy": True,
-            "total_events": len(items),
-            "details": {"sample_count": len(items)},
-            "summary": f"PostHog healthy. Sampled {len(items)} events."
-        }, summary=f"PostHog health check passed with {len(items)} events.")
+        auth_res = await client.verify_auth()
+        is_ok = auth_res.get("status") == "ok"
+        events = await client.list_events(limit=10)
+        healthy = is_ok and len(events) >= 0
+        summary = f"PostHog connector health: {'healthy' if healthy else 'degraded'}. {len(events)} events inspected."
+        return ActionResult.success({
+            "healthy": healthy,
+            "total_events": len(events),
+            "details": {"auth": auth_res, "sample_count": len(events)},
+            "summary": summary
+        }, summary=summary)
     except Exception as e:
-        return ActionResult.error(f"Error auditing PostHog health: {e}")
+        return ActionResult.error(f"PostHog health audit failed: {e}")
