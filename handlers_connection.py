@@ -34,7 +34,7 @@ async def resolve_client(ctx, connection_id: str = "") -> PostHogClient:
     return PostHogClient(api_key=conn["api_key"], base_url=conn.get("base_url", ""))
 
 @chat.function("connect_posthog_connector", "Connect PostHog account via credentials.", action_type="write", chain_callable=True, event="posthog-connector.connect_posthog_connector", effects=["create:connection"], data_model=ConnectionRecord)
-async def connect_posthog_connector(params: ConnectParams, ctx) -> ActionResult:
+async def connect_posthog_connector(ctx, params: ConnectParams) -> ActionResult:
     client = PostHogClient(api_key=params.api_key, base_url=params.base_url)
     res = await client.verify_auth()
     if res.get("status") == "error":
@@ -54,13 +54,13 @@ async def connect_posthog_connector(params: ConnectParams, ctx) -> ActionResult:
     return ActionResult.success(out, summary=f"Connected PostHog account: {record['label']}.")
 
 @chat.function("list_connections", "List configured PostHog connections.", action_type="read", chain_callable=True, event="posthog-connector.list_connections", effects=["read:connections"], data_model=ConnectionList)
-async def list_connections(params: NoParams, ctx) -> ActionResult:
+async def list_connections(ctx, params: NoParams) -> ActionResult:
     conns = await get_connections_list(ctx)
     clean = [{k: v for k, v in c.items() if k != "api_key" and not k.startswith("_")} for c in conns]
     return ActionResult.success({"connections": clean, "total": len(clean)}, summary=f"Found {len(clean)} PostHog connections.")
 
 @chat.function("disconnect_posthog_connector", "Disconnect PostHog account and delete stored credentials.", action_type="write", chain_callable=True, event="posthog-connector.disconnect_posthog_connector", effects=["delete:connection"], data_model=DeleteResult)
-async def disconnect_posthog_connector(params: ConnectionIdParams, ctx) -> ActionResult:
+async def disconnect_posthog_connector(ctx, params: ConnectionIdParams) -> ActionResult:
     conns = await get_connections_list(ctx)
     target = None
     if params.connection_id:
