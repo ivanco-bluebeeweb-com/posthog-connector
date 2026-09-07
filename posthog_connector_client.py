@@ -25,7 +25,6 @@ class PostHogClient:
             data = resp.json()
             self._project_id = data.get("id")
             return self._project_id
-        # Fallback to projects list
         resp_list = await client.get(f"{self.base_url}/projects/", headers=self.headers)
         if resp_list.status_code in (200, 201):
             data = resp_list.json()
@@ -41,51 +40,56 @@ class PostHogClient:
                 resp = await client.get(f"{self.base_url}/users/@me/", headers=self.headers)
                 if resp.status_code in (200, 201):
                     return {"status": "ok", "data": resp.json() if resp.content else {}}
-                # Secondary verify via projects
-                resp_p = await client.get(f"{self.base_url}/projects/@current/", headers=self.headers)
-                if resp_p.status_code in (200, 201):
-                    return {"status": "ok", "data": resp_p.json() if resp_p.content else {}}
                 return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.text}"}
             except Exception as e:
                 return {"status": "error", "error": str(e)}
 
     async def list_events(self, limit: int = 20) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                pid = await self.get_project_id(client)
-                resp = await client.get(f"{self.base_url}/projects/{pid}/events/", headers=self.headers, params={"limit": limit})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, list):
-                        return data
-                    for k in ["results", "data", "events", "items"]:
-                        if k in data and isinstance(data[k], list):
-                            return data[k]
-                    return []
+            pid = await self.get_project_id(client)
+            resp = await client.get(f"{self.base_url}/projects/{pid}/events/", headers=self.headers, params={"limit": limit})
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+                for k in ["results", "data", "events", "items"]:
+                    if k in data and isinstance(data[k], list):
+                        return data[k]
                 return []
-            except Exception:
-                return []
+            return []
 
     async def get_event(self, event_id: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                pid = await self.get_project_id(client)
-                resp = await client.get(f"{self.base_url}/projects/{pid}/events/{event_id}/", headers=self.headers)
-                if resp.status_code in (200, 201):
-                    return resp.json()
-                return {"id": event_id, "error": f"HTTP {resp.status_code}: {resp.text}"}
-            except Exception as e:
-                return {"id": event_id, "error": str(e)}
+            pid = await self.get_project_id(client)
+            resp = await client.get(f"{self.base_url}/projects/{pid}/events/{event_id}/", headers=self.headers)
+            if resp.status_code == 200:
+                return resp.json()
+            return {"error": f"HTTP {resp.status_code}: {resp.text}"}
 
-    # Additional CRUD method for PostHog Actions
+    async def audit_health(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            auth_res = await self.verify_auth()
+            events = await self.list_events(limit=10)
+            return {
+                "healthy": auth_res.get("status") == "ok",
+                "total_events": len(events),
+                "details": {
+                    "auth": auth_res,
+                    "sample_events": [str(e.get("id")) for e in events[:5]]
+                }
+            }
+
     async def create_action(self, name: str, event_name: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             pid = await self.get_project_id(client)
-            payload = {"name": name, "steps": [{"event": event_name}]}
+            payload = {
+                "name": name,
+                "steps": [{"event": event_name}]
+            }
             resp = await client.post(f"{self.base_url}/projects/{pid}/actions/", headers=self.headers, json=payload)
             if resp.status_code in (200, 201):
                 return resp.json()
-            raise RuntimeError(f"Failed to create action: HTTP {resp.status_code} {resp.text}")
+            raise RuntimeError(f"Failed to create PostHog action: HTTP {resp.status_code} {resp.text}")
 
     async def list_actions(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -93,12 +97,11 @@ class PostHogClient:
             resp = await client.get(f"{self.base_url}/projects/{pid}/actions/", headers=self.headers)
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("results", [])
+                return data.get("results") or []
             return []
 
     async def delete_action(self, action_id: str | int) -> bool:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             pid = await self.get_project_id(client)
-            # PostHog soft-deletes actions via PATCH deleted=True
             resp = await client.patch(f"{self.base_url}/projects/{pid}/actions/{action_id}/", headers=self.headers, json={"deleted": True})
             return resp.status_code in (200, 204)
